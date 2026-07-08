@@ -1,0 +1,17 @@
+{
+  "name": "hr-skill",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "HR logtime + company-wide timesheet export MCP server (Jira + Tempo + Slack + Google Sheets)",
+  "main": "mcp-server.js",
+  "scripts": {
+    "start": "node mcp-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

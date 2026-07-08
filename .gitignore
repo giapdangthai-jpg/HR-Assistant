@@ -1,0 +1,9 @@
+.env
+config/config.json
+config/absence_cache.json
+config/missing_logtime_run.json
+config/set_hae_misc_run.json
+config/export_report_run.json
+config/wfh_cache.json
+node_modules/
+.DS_Store
