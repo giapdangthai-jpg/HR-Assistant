@@ -23,11 +23,37 @@ export function parseTicketKeys(text) {
   };
 }
 
+// Keywords that mark a message as an absence/late/early/WFH request.
+// Single source of truth — imported by update_absence.js and used by
+// detectAbsenceClaim below, so all three call sites (personal check,
+// company-wide check, on-demand refresh) recognize the exact same set of
+// phrasings. Covers both Vietnamese and the English wordings people
+// actually use in #vn-absence ("be late", "leave early", "day off",
+// "off this morning", "out of office", "sick", ...).
+export const ABSENCE_KEYWORDS = /nghỉ|xin phép|về sớm|đến muộn|đi muộn|đi trễ|leave|absence|\boff\b|day ?off|wfh|work.?from.?home|\blate\b|\bsick\b|out of office|\booo\b/i;
+export const ABSENCE_EXCLUDE  = /overtime|sprint on track|request overtime/i;
+
 export function parseAbsenceHours(text) {
   if (/full.?day|cả ngày|nghỉ nguyên ngày/i.test(text)) return WORK_HOURS;
   if (/half.?day|nửa ngày/i.test(text)) return WORK_HOURS / 2;
-  const m = text.match(/(\d+(?:[.,]\d+)?)\s*(?:h\b|giờ\b|tiếng\b|hour)/i);
-  return m ? parseFloat(m[1].replace(",", ".")) : null;
+  const h = text.match(/(\d+(?:[.,]\d+)?)\s*(?:h\b|giờ\b|tiếng\b|hour)/i);
+  if (h) return parseFloat(h[1].replace(",", "."));
+  // Minutes ("30 mins", "30 phút", "20'" apostrophe notation) — without
+  // this, "be late 30 mins" / "late 20'" would fall through to null and
+  // get treated as a full-day (7h) absence.
+  const min = text.match(/(\d+)\s*(?:m\b|min|mins|minute|minutes|phút|['’])/i);
+  if (min) return parseFloat((parseInt(min[1], 10) / 60).toFixed(2));
+  // Half-day by session, when no explicit hours/minutes are given
+  // ("off this morning", "leave this afternoon"). Same convention as the
+  // WFH parser (morning = 3h, afternoon = 4h). Checked AFTER explicit
+  // hours/minutes above, so "leave early 1h this afternoon" still returns
+  // 1h, not 4h. Only reached for messages already confirmed to be absence
+  // requests (parseAbsenceHours is called only after the ABSENCE_KEYWORDS
+  // filter in detectAbsenceClaim), so "meeting this morning" never lands
+  // here.
+  if (/\bmorning\b|buổi sáng|sáng nay/i.test(text)) return 3;
+  if (/\bafternoon\b|buổi chiều|chiều nay/i.test(text)) return 4;
+  return null;
 }
 
 // dateISO: "YYYY-MM-DD" string
@@ -55,8 +81,8 @@ export function mentionsDate(text, dateISO) {
 export function detectAbsenceClaim(dateISO, messages, authorId) {
   for (const msg of messages) {
     if (!msg.text) continue;
-    if (/overtime|sprint on track|request overtime/i.test(msg.text)) continue;
-    if (!/nghỉ|leave|absence|off\b|wfh|work.?from.?home|về sớm|đến muộn|xin phép/i.test(msg.text)) continue;
+    if (ABSENCE_EXCLUDE.test(msg.text)) continue;
+    if (!ABSENCE_KEYWORDS.test(msg.text)) continue;
 
     const fromAuthor = authorId && msg.user === authorId;
     if (!fromAuthor) continue;

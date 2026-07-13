@@ -11,10 +11,7 @@ import { getMonthAbsenceData } from "./lib/absence_cache.js";
 import { getSlackUserEmail, resolveSlackChannel } from "./lib/slack.js";
 import { findJiraUserByEmail } from "./lib/jira.js";
 import { todayVN } from "./lib/dates.js";
-import { mentionsDate } from "./lib/worklog.js";
-
-const ABSENCE_KEYWORDS = /nghỉ|leave|absence|off\b|wfh|work.?from.?home|về sớm|đến muộn|xin phép/i;
-const EXCLUDE_KEYWORDS = /overtime|sprint on track|request overtime/i;
+import { mentionsDate, ABSENCE_KEYWORDS, ABSENCE_EXCLUDE } from "./lib/worklog.js";
 
 export async function updateAbsenceInfo({ date, force = false } = {}) {
   const cfg = loadConfig();
@@ -28,7 +25,7 @@ export async function updateAbsenceInfo({ date, force = false } = {}) {
   const byAuthor = new Map(); // slackUserId -> [text, ...]
   for (const msg of md.messages || []) {
     if (!msg.text || !msg.user) continue;
-    if (EXCLUDE_KEYWORDS.test(msg.text)) continue;
+    if (ABSENCE_EXCLUDE.test(msg.text)) continue;
     if (!ABSENCE_KEYWORDS.test(msg.text)) continue;
     const msgDate = msg.ts ? new Date(parseFloat(msg.ts) * 1000).toISOString().slice(0, 10) : "";
     const relevant = msgDate === targetDate || mentionsDate(msg.text, targetDate);
