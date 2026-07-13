@@ -12,7 +12,7 @@ const TASKS = [
   { n: 3, icon: "📣", name: "Send time log warning to Slack", cmd: "gửi nhắc nhở thiếu log time lên Slack" },
   { n: 4, icon: "📅", name: "Update absence information", cmd: "update absence information hôm nay", hint: "cập nhật absence cache + xem ai xin đi muộn/về sớm/nghỉ hôm nay" },
   { n: 5, icon: "📊", name: "Create timesheet", cmd: "create timesheet", hint: "sẽ hỏi chọn: tháng này / tháng trước" },
-  { n: 6, icon: "🗂️", name: "Set HAE and MISC", cmd: "set HAE và MISC cho tháng này", hint: "tạo/dùng lại ticket HAE + MISC tháng này rồi thông báo lên Slack" },
+  { n: 6, icon: "🗂️", name: "Set HAE and MISC", cmd: "set HAE và MISC", hint: "xem trạng thái MISC/HAE, hỏi tạo mới cho tháng này/tháng sau, rồi thông báo Slack" },
   { n: 7, icon: "⚙️", name: "Config", cmd: "config" },
 ];
 

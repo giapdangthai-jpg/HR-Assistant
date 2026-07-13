@@ -46,6 +46,7 @@ export async function missingLogtimeScan({ period, from: fromArg, to: toArg } = 
   const to   = periodRange?.to   || toArg   || today;
 
   const { id: absenceChannelId, name: absenceChannelName } = resolveSlackChannel(cfg.hr?.absenceChannel || "vn-absence");
+  const slackIdOverrides = cfg.hr?.slackIdByJiraName || {};
 
   // Same per-month cache logtime.js uses (config.json first, else scan
   // #vn-absence and cache the result) — `messages` here is EVERY message
@@ -96,7 +97,14 @@ export async function missingLogtimeScan({ period, from: fromArg, to: toArg } = 
 
     const user = await getJiraUser(accountId);
     if (!user) return null;
-    const slackId = user.email ? await lookupUserByEmail(user.email) : null;
+    // Jira → Slack normally bridges via email. But some accounts hide
+    // their email in Jira (privacy setting → getJiraUser returns email
+    // null), so lookupByEmail can't run at all. For those, fall back to a
+    // manual map in config.json (`hr.slackIdByJiraName`, keyed by trimmed
+    // Jira display name) that HR fills in once — without it those people
+    // show as plain "@Name" text and don't get a real Slack mention.
+    let slackId = user.email ? await lookupUserByEmail(user.email) : null;
+    if (!slackId) slackId = slackIdOverrides[(user.displayName || "").trim()] || null;
 
     let wrongDays = [];
     // Cross-check: did this person post an absence claim (đi muộn/về
@@ -165,13 +173,13 @@ function buildMessage(run) {
   (run.people || []).forEach(p => {
     i++;
     const mention = p.slackId ? `<@${p.slackId}>` : `@${p.name}`;
-    lines.push(`${i}. ${mention}: log time thiếu ngày ${p.missingDays.map(dayLabel).join(", ")}`);
+    lines.push(`${i}. ${mention}: missing time log on ${p.missingDays.map(dayLabel).join(", ")}`);
   });
   (run.wrongAbsence || []).forEach(p => {
     i++;
     const mention = p.slackId ? `<@${p.slackId}>` : `@${p.name}`;
-    const detail = p.wrongDays.map(w => `${dayLabel(w.d)} (khai ${hoursToJira(w.expectedHours)}, đã log ${hoursToJira(w.actualMisc)} vào ${w.miscKey})`).join("; ");
-    lines.push(`${i}. ${mention}: đã khai nghỉ/đi muộn/về sớm nhưng log MISC chưa đủ — ${detail}`);
+    const detail = p.wrongDays.map(w => `${dayLabel(w.d)} (declared ${hoursToJira(w.expectedHours)}, logged ${hoursToJira(w.actualMisc)} on ${w.miscKey})`).join("; ");
+    lines.push(`${i}. ${mention}: declared leave/late/early on Slack but hasn't logged enough to MISC — ${detail}`);
   });
   lines.push(``, `Thank you!`);
   return lines.join("\n");
@@ -200,7 +208,7 @@ export async function missingLogtimeNotify({ message, confirm = false } = {}) {
     saveRun(run);
     return [
       `📋 **Missing Logtime Notify Preview** — #${absenceChannelName}`,
-      `**Range:** ${run.from} → ${run.to}  |  **Thiếu log:** ${run.people?.length || 0}  |  **Khai nghỉ nhưng log sai:** ${run.wrongAbsence?.length || 0}`,
+      `**Range:** ${run.from} → ${run.to}  |  **Missing log:** ${run.people?.length || 0}  |  **Declared but under-logged:** ${run.wrongAbsence?.length || 0}`,
       message ? `_✏️ Đã áp dụng nội dung chỉnh sửa_` : ``,
       ``, `---`, run.slackPreview, `---`, ``,
       `✅ Gửi: gọi lại action="notify" với confirm=true`,

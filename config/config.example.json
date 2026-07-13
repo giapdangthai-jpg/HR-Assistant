@@ -5,7 +5,8 @@
     "absenceChannel": { "name": "vn-absence", "id": "C06QV7VSKCG" },
     "wfhChannel": { "name": "wfh-request", "id": "C0ALU4JK2UF" },
     "haeIssue": "",
-    "miscIssueByMonth": {}
+    "miscIssueByMonth": {},
+    "slackIdByJiraName": {}
   },
   "companyTimesheet": {
     "templateFileId": "",

@@ -136,11 +136,40 @@ export async function logTime({
 
   const loggedByDate = {};
   const worklogIds   = {};
+  // Guards against double-counting the SAME logical worklog. Keyed by
+  // `issueKey|started|timeSpentSeconds` — this company's Jira worklogs are
+  // Tempo-synced, and a single logged block can surface as two Jira
+  // worklog rows (the user's own + a Tempo-bot mirror) with the exact same
+  // start timestamp and duration. Because the personal-ticket merge counts
+  // both `isMine` and Tempo-bot (`isProxy`) entries, those mirrors were
+  // being summed twice — a real 7h day read as 14h/17h (reported bug on
+  // TBO-347, 2026-06-29/30). Two worklogs sharing an exact start AND exact
+  // duration on one ticket are definitionally a duplicate, never a
+  // legitimate split, so counting them once is safe.
+  const seenWorklog = new Set();
 
   let myAccountId = null;
   try { myAccountId = (await getMyself()).accountId || null; } catch {}
 
   function isProxyEntry(l) { return l.author?.accountId?.startsWith("557058:"); }
+
+  // Records a worklog. The worklog id is ALWAYS tracked (so a later
+  // add/delete cleanly removes every row, duplicates included), but its
+  // hours are added to the day total only once per unique
+  // `issueKey|started|timeSpentSeconds` — so an exact-duplicate mirror row
+  // inflates neither the displayed total nor the auto-fix decision, yet
+  // still gets deleted when the day is rewritten. Shared by mergeWorklogs
+  // and the JQL fallback so both paths behave identically.
+  function recordWorklog(wDate, issueKey, l) {
+    if (!worklogIds[wDate]) worklogIds[wDate] = [];
+    worklogIds[wDate].push({ issueKey, id: l.id });
+
+    const dedupeKey = `${issueKey}|${l.started}|${l.timeSpentSeconds || 0}`;
+    if (seenWorklog.has(dedupeKey)) return;
+    seenWorklog.add(dedupeKey);
+    if (!loggedByDate[wDate]) loggedByDate[wDate] = {};
+    loggedByDate[wDate][issueKey] = (loggedByDate[wDate][issueKey] || 0) + (l.timeSpentSeconds || 0) / 3600;
+  }
 
   // Does NOT swallow errors — a failed fetch must never look identical to
   // "fetched successfully, found 0 worklogs". Callers decide how critical
@@ -157,10 +186,7 @@ export async function logTime({
         : jiraEmail && l.author?.emailAddress === jiraEmail;
       const isProxy = isProxyEntry(l);
       if (isMine || (isProxy && isPersonalTicket)) {
-        if (!loggedByDate[wDate]) loggedByDate[wDate] = {};
-        loggedByDate[wDate][ticketKey] = (loggedByDate[wDate][ticketKey] || 0) + (l.timeSpentSeconds || 0) / 3600;
-        if (!worklogIds[wDate]) worklogIds[wDate] = [];
-        worklogIds[wDate].push({ issueKey: ticketKey, id: l.id });
+        recordWorklog(wDate, ticketKey, l);
       }
     }
   }
@@ -220,10 +246,7 @@ export async function logTime({
           const wDate = l.started?.slice(0, 10);
           if (!wDate || !workdays.includes(wDate)) continue;
           if (l.author?.accountId !== myAccountId) continue;
-          if (!loggedByDate[wDate]) loggedByDate[wDate] = {};
-          loggedByDate[wDate][issue.key] = (loggedByDate[wDate][issue.key] || 0) + (l.timeSpentSeconds || 0) / 3600;
-          if (!worklogIds[wDate]) worklogIds[wDate] = [];
-          worklogIds[wDate].push({ issueKey: issue.key, id: l.id });
+          recordWorklog(wDate, issue.key, l);
         }
         processedKeys.add(issue.key);
       }
@@ -238,6 +261,13 @@ export async function logTime({
     const expected = detectEntries(d, { ...ctx, isHoliday: isHolidayFn(d) });
 
     if (totalH === 0) return { status: "missing", actual, totalH, expected };
+
+    // Safety valve: after de-duping, a day still totalling well over a
+    // working day almost certainly means messy source data (e.g. genuine
+    // overlapping worklogs the dedupe can't safely merge), not a normal
+    // wrong-split. Never auto-fix these — deleting-and-rewriting could
+    // erase real logged hours. Surface them for manual review instead.
+    if (totalH > WORK_HOURS + 2) return { status: "suspicious", actual, totalH, expected };
 
     if (totalH >= WORK_HOURS - 0.1) {
       const splitOk = expected.every(e => Math.abs((actual[e.ticket] || 0) - e.hours) <= 0.1)
@@ -269,9 +299,20 @@ export async function logTime({
     lines.push("");
 
     const classified = workdays.map(d => ({ d, ...classifyDay(d) }));
-    const okDays      = classified.filter(x => x.status === "ok");
-    const wrongDays   = classified.filter(x => x.status === "wrong");
-    const missingDays = classified.filter(x => x.status === "missing");
+    const okDays         = classified.filter(x => x.status === "ok");
+    const wrongDays      = classified.filter(x => x.status === "wrong");
+    const missingDays    = classified.filter(x => x.status === "missing");
+    const suspiciousDays = classified.filter(x => x.status === "suspicious");
+
+    if (suspiciousDays.length) {
+      lines.push("**⚠️ Cần kiểm tra thủ công (tổng giờ bất thường — KHÔNG auto-fix):**");
+      suspiciousDays.forEach(({ d, actual, totalH }) => {
+        const breakdown = Object.entries(actual).map(([t, h]) => `${t}: ${hoursToJira(h)}`).join(" + ");
+        lines.push(`  🔍 ${d} — tổng ${hoursToJira(totalH)} (${breakdown})`);
+      });
+      lines.push(`     _(Tổng vượt xa 1 ngày công. Có thể worklog trên Jira/Tempo bị trùng hoặc chồng lấn — hãy mở Jira/Tempo kiểm tra & sửa tay. Tool cố ý KHÔNG đưa các ngày này vào auto-fix để tránh xóa nhầm worklog thật.)_`);
+      lines.push("");
+    }
 
     if (okDays.length) {
       lines.push("**Đã log đúng:**");
@@ -309,7 +350,7 @@ export async function logTime({
       lines.push(`Confirm log missing: gọi lại action="add", dates=${JSON.stringify(missingDates)}, sau đó thêm confirm=true`);
     }
 
-    if (!wrongDays.length && !missingDays.length) lines.push("Tất cả ngày đã log đúng.");
+    if (!wrongDays.length && !missingDays.length && !suspiciousDays.length) lines.push("Tất cả ngày đã log đúng.");
 
     return lines.join("\n");
   }

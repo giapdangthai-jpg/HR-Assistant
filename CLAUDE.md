@@ -56,11 +56,12 @@ process would kill every other in-flight tool call on this same server):
    still auto-refresh the cache themselves when stale; this is just the
    named, proactive way to warm it and see today's activity without
    running a heavier check. See "`update_absence` discipline" below.
-6. **`set_hae_misc`** — monthly setup: creates (or reuses) the HAE
-   "Holidays & Events" ticket and this month's MISC "Absence" ticket,
-   wires their keys into `absence_cache.json` for `logtime` to use, then
-   announces both on Slack. Same preview → edit → confirm discipline as
-   everything else here — see "`set_hae_misc` discipline" below.
+6. **`set_hae_misc`** — monthly setup: a `status` → `create` → `notify`
+   flow that reports whether this month's MISC and the HAE ticket exist,
+   asks HR two independent create questions (MISC for this/next month,
+   and HAE), creates/adopts only what HR agrees to, wires the keys into
+   `config.json` + `absence_cache.json` for `logtime`, then announces on
+   Slack. See "`set_hae_misc` discipline" below.
 7. **`missing_logtime`** — scans the company for who's missing logtime in
    a date range and posts a reminder to the absence Slack channel, gated
    by the same scan → preview → confirm discipline as PM Assistant's
@@ -193,6 +194,32 @@ Never call any Slack MCP tool from this flow — Slack is only read
 (`getChannelHistory`) inside `logtime.js` for absence detection; there is
 no Slack notification here.
 
+**Worklog de-duplication + over-log safety valve** (`recordWorklog` /
+`classifyDay` in `logtime.js`). Reported bug: a real 7h day on TBO-347
+read as 14–17h because this company's Jira worklogs are Tempo-synced and
+one logged block can surface as two Jira rows (the user's own + a
+Tempo-bot mirror). The personal-ticket merge counts both `isMine` and
+`isProxy` (Tempo-bot) entries, so those mirrors were summed twice.
+- `recordWorklog` adds a worklog's hours to the day total only once per
+  unique `issueKey|started|timeSpentSeconds` (two rows sharing an exact
+  start and duration are definitionally a duplicate, never a real split),
+  but ALWAYS tracks its id — so a later add/delete still removes every
+  physical row, mirrors included, when rewriting a day. Don't collapse
+  these two behaviors back together (count-once but delete-all is the
+  point). The JQL fallback uses the same `recordWorklog`, so it dedupes
+  identically.
+- `classifyDay` returns a `suspicious` status for any day still totalling
+  more than `WORK_HOURS + 2` after de-duping. These are shown under
+  "Cần kiểm tra thủ công" and are deliberately EXCLUDED from the auto-fix
+  `dates` list — auto-fixing means delete-then-rewrite, and a genuinely
+  over-logged day (not a simple mirror the dedupe caught) could have real
+  hours that must not be silently deleted. Don't fold `suspicious` back
+  into `wrong`.
+- Note: `timeSpentSeconds` is always the source of truth for math; the
+  `timeSpent` string ("1d", "3h") is display-only and never parsed for
+  totals — Jira's "1d" can be ≥8h depending on the instance's working-day
+  config, so never infer hours from that label.
+
 **HAE/MISC ticket key resolution, in priority order** (`getMonthAbsenceData`
 in `logtime.js`): (1) `config.json`'s `hr.haeIssue` / `hr.miscIssueByMonth.
 <month>` — set by `set_hae_misc.js`, authoritative once present, cannot be
@@ -226,46 +253,46 @@ today's raw đi muộn/về sớm/nghỉ messages without running a full check).
 
 ## `set_hae_misc` discipline
 
-Monthly setup: creates the HAE "Holidays & Events" ticket and this
-month's MISC "Absence" ticket (real, visible Jira artifacts), saves their
-keys into `config.json` (`hr.haeIssue`, `hr.miscIssueByMonth.<YYYY-MM>`)
-and `absence_cache.json` for `logtime` to use, then announces both on
-Slack.
+Sets up the HAE "Holidays & Events" ticket (one perpetual ticket) and the
+per-month MISC "Absence" ticket, saves their keys into `config.json`
+(`hr.haeIssue`, `hr.miscIssueByMonth.<YYYY-MM>`) + `absence_cache.json`
+for `logtime`, then announces on Slack. Three actions, status → create →
+notify — **HAE and MISC are two independent yes/no decisions**, not a
+single bundled create.
 
-1. **Always ask which month first** — "tạo cho tháng này hay tháng sau?"
-   — then call `action="plan"` with `period="thisMonth"` or
-   `period="nextMonth"` (not a hand-typed `month`; letting the tool
-   compute the YYYY-MM avoids a hand-computed December→January bug).
-   Calling `plan` with neither makes the tool ask this same question back
-   — that's the intended guard, not a bug, so don't paper over it by
-   guessing a month yourself.
-2. The tool checks `config.json` for that month **before** touching Jira
-   at all: if both `haeIssue` and `miscIssueByMonth.<month>` are already
-   set, it reports them immediately and refuses to create anything —
-   relay that to HR and move straight to `action="notify"`, no
-   preview/confirm needed for creation in that case.
-3. Otherwise `action="plan"` (no `confirm`) previews both intended
-   titles and whether each will be created new, adopted from a
-   pre-existing Jira ticket with the exact same title (the config-check
-   in step 2 only catches tickets *this tool* already recorded — this
-   catches ones that existed before, like HAE-17/MISC-51), or reused from
-   config. HAE's title never changes month to month, so once set it's
-   always reused, never recreated. Let HR edit via `haeTitle`/`miscTitle`
-   as many times as needed.
-4. Only after explicit confirmation, call `action="plan" confirm=true` —
-   this is the one call that actually creates Jira tickets. Never combine
-   an edited title with `confirm=true` in the same call — edit, show the
-   new preview, then confirm as a separate step.
-5. `action="notify"` (no `confirm`) — shows the **full** Slack
-   announcement text (month name comes from whichever month was just
-   planned, not necessarily the calendar's current month). Same edit
-   loop via `message=`. Only `action="notify" confirm=true` actually
-   posts to `#vn-absence`. Never use a Slack MCP tool for this.
+1. `action="status"` (no writes). Reports whether **this month's** MISC
+   exists (+ its key) and whether HAE exists (+ its key), and returns the
+   branching questions verbatim for Claude to ask HR **one at a time**:
+   - The MISC target month is computed by the tool: if this month's MISC
+     is missing → offer to create it for **this month**; if it already
+     exists → offer to create for **next month** (`shiftMonth`, so the
+     Dec→Jan rollover is never hand-computed). Relay whichever question
+     the tool returned; don't substitute your own month.
+   - Then a separate "tạo mới HAE không?" question.
+   - Status persists the target month to the run file; `create` requires
+     it (guard below).
+2. `action="create"` with `month=<the status target>`, `createMisc`,
+   `createHae` (booleans reflecting HR's two answers). This is the call
+   that writes to Jira. It refuses if `action="status"` wasn't run for
+   that same month (blind-create guard) and is a no-op if both booleans
+   are false. For each thing HR opted into, it creates a new ticket OR
+   adopts an existing exact-same-title one (config first, then a Jira
+   title search — so HAE-17/MISC-51 created before this tool are adopted,
+   never duplicated). HAE's title never changes, so once it exists it's
+   always reused. Only create what HR actually agreed to — never both by
+   default.
+3. `action="notify"` (no `confirm`) — shows the **full** Slack
+   announcement text; needs BOTH keys for the run's month (refuses with a
+   clear "thiếu HAE/MISC" message otherwise, so it won't post a
+   half-filled announcement). Same edit loop via `message=`. Only
+   `action="notify" confirm=true` actually posts to `#vn-absence`. Never
+   use a Slack MCP tool for this.
 
 Note: creating a MISC issue requires Jira "Create Issues" permission on
 the MISC project for whichever account's `JIRA_EMAIL`/`JIRA_API_TOKEN`
-is configured — if that's missing, `action="plan" confirm=true` will
-surface a clear Jira 403/400 error instead of silently failing.
+is configured — if that's missing, `action="create"` surfaces a clear
+Jira 403/400 error instead of silently failing (and any HAE created in
+the same call is still saved first).
 
 ## `export_report` (a.k.a. `hr_menu`'s "Create timesheet") — explicit scope (do not silently expand)
 
@@ -474,6 +501,21 @@ at the same time as a real data bug below, making it doubly hard for HR
 to tell "is this actually wrong" from "did Claude just say it wrong").
 Same rule for `logtime`'s `action="check"` — relay the returned text
 as-is, don't compress it into a summary.
+
+**Slack-ID resolution for @mentions, with a manual override.** Each
+flagged person's Jira accountId → Slack ID is resolved by bridging on
+email (`getJiraUser` → `lookupUserByEmail`). Some Jira accounts hide
+their email (privacy setting → `getJiraUser` returns `email: null`), so
+that bridge can't run and the person shows as plain `@Name` text instead
+of a real `<@U…>` mention. For those, `missing_logtime.js` falls back to
+`config.json`'s `hr.slackIdByJiraName` — a map keyed by the **exact,
+trimmed** Jira display name → Slack user id, which HR fills in once. The
+Slack ids can be found via `users.list` (matched by name in the Slack
+directory). Don't auto-guess an id by fuzzy name match at runtime — a
+wrong guess pings the wrong person; the override map is deliberately a
+manual, reviewed mapping. If someone genuinely isn't in the Slack
+workspace at all, leave them out (they stay `@Name` text) rather than
+mapping them to a similarly-named different person.
 
 Same period-preset rule as `logtime`'s "Check my time log" task: when HR
 wants to check company-wide time log without naming a date range, always

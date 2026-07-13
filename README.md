@@ -163,13 +163,13 @@ Muốn gửi nhắc nhở lên Slack ("Send time log warning to Slack"): Claude 
 
 ## 9. Set HAE and MISC (đầu tháng)
 
-Đầu mỗi tháng, cần ticket HAE (Holidays & Events, dùng chung mãi mãi) và ticket MISC (Absence, tạo mới mỗi tháng) để `logtime`/`missing_logtime` tự phát hiện nghỉ lễ/nghỉ phép. Trong Claude Code, nói **"set HAE và MISC"** — Claude sẽ hỏi bạn tạo cho tháng này hay tháng sau, rồi:
+Đầu mỗi tháng, cần ticket HAE (Holidays & Events, dùng chung mãi mãi) và ticket MISC (Absence, tạo mới mỗi tháng) để `logtime`/`missing_logtime` tự phát hiện nghỉ lễ/nghỉ phép. Trong Claude Code, nói **"set HAE và MISC"** — Claude đi 3 bước:
 
-1. Gọi `set_hae_misc(action="plan", period=...)` — nếu tháng đó đã có đủ HAE+MISC trong `config.json` rồi, tool báo luôn và không tạo gì cả. Nếu chưa, hiển thị preview tên 2 ticket (kể cả trường hợp dùng lại ticket trùng tên có sẵn trong Jira) — có thể sửa tên trước khi xác nhận.
-2. Xác nhận → `confirm=true` → tạo (hoặc dùng lại) 2 ticket thật trên Jira, lưu key vào `config.json`.
-3. `set_hae_misc(action="notify")` — preview rồi gửi thông báo lên `#vn-absence` cho toàn công ty biết link 2 ticket của tháng đó.
+1. `set_hae_misc(action="status")` — báo trạng thái: **MISC tháng này** đã/chưa có (kèm tên), **HAE** đã/chưa có (kèm tên). Rồi hỏi bạn lần lượt: nếu MISC tháng này **chưa có** → "tạo mới MISC cho tháng này?"; nếu **đã có** → "tạo mới MISC cho tháng sau?"; và "tạo mới HAE không?".
+2. `set_hae_misc(action="create", month=..., createMisc=..., createHae=...)` — tạo (hoặc dùng lại nếu đã có ticket trùng tên) đúng những gì bạn đồng ý. MISC và HAE độc lập — có thể tạo một, cả hai, hoặc không.
+3. `set_hae_misc(action="notify")` — preview rồi gửi thông báo lên `#vn-absence` cho toàn công ty biết link HAE + MISC của tháng đó (chỉ gửi khi đã đủ cả 2 ticket).
 
-**Cần quyền Jira "Create Issues"** trên project MISC (và HAE lần đầu) cho tài khoản trong `.env` — nếu thiếu, `action="plan" confirm=true` sẽ báo lỗi rõ 403/400 thay vì tạo âm thầm sai.
+**Cần quyền Jira "Create Issues"** trên project MISC (và HAE lần đầu) cho tài khoản trong `.env` — nếu thiếu, `action="create"` sẽ báo lỗi rõ 403/400 thay vì tạo âm thầm sai.
 
 ## 10. Lỗi thường gặp
 
@@ -184,6 +184,7 @@ Muốn gửi nhắc nhở lên Slack ("Send time log warning to Slack"): Claude 
 | `missing_scope` khi resolve Slack ID | Token Slack thiếu `users:read.email` | Slack App settings → OAuth & Permissions → thêm scope → reinstall app |
 | `⚠️ WFH: N người không có trong danh sách CODE` | Người đó chưa có dòng CODE trong tab `Timesheet '` của file report | HR tự thêm dòng CODE mới |
 | `set_hae_misc` báo lỗi 403/400 khi tạo ticket MISC | Tài khoản trong `.env` thiếu quyền "Create Issues" trên project MISC | Nhờ Jira admin cấp quyền cho project MISC (và HAE nếu lần đầu) |
+| `⚠️ (chưa resolve Slack ID)` — người hiện `@Tên` thường, không tag được | Jira ẩn email của account đó nên không tự bắc cầu Jira→Slack | Thêm vào `config.json` → `hr.slackIdByJiraName`: `{ "Tên Jira chính xác": "U…SlackID" }`. Lấy Slack ID bằng cách tìm tên trong Slack (Profile → Copy member ID), hoặc nhờ Claude tra giúp qua `users.list`. |
 
 ## 11. Giới hạn đã biết (có chủ đích, không phải bug)
 
