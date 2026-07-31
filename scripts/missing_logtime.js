@@ -11,8 +11,8 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { loadConfig } from "./lib/store.js";
-import { getJiraUser } from "./lib/jira.js";
-import { fetchCompanyWorklogsInRange, normalizeTempoWorklog } from "./lib/tempo.js";
+import { getJiraUser, jiraGet } from "./lib/jira.js";
+import { fetchCompanyWorklogsInRange } from "./lib/tempo.js";
 import { getMonthAbsenceData } from "./lib/absence_cache.js";
 import { resolveSlackChannel, lookupUserByEmail, postAndGetLink } from "./lib/slack.js";
 import { todayVN, mondayOfWeek, workdaysInRange, MONTH_SHORT, resolvePeriod, PERIOD_LABELS } from "./lib/dates.js";
@@ -72,16 +72,36 @@ export async function missingLogtimeScan({ period, from: fromArg, to: toArg } = 
   }
 
   const rawWorklogs = await fetchCompanyWorklogsInRange(from, to);
-  const worklogs = await Promise.all(rawWorklogs.map(normalizeTempoWorklog));
 
-  const byAccount = new Map(); // accountId -> { byDay: {date: totalHours}, byDayTicket: {date: {ticket: hours}} }
-  for (const w of worklogs) {
-    if (!w.accountId) continue;
-    if (!byAccount.has(w.accountId)) byAccount.set(w.accountId, { byDay: {}, byDayTicket: {} });
-    const acc = byAccount.get(w.accountId);
-    acc.byDay[w.date] = (acc.byDay[w.date] || 0) + w.hours;
-    if (!acc.byDayTicket[w.date]) acc.byDayTicket[w.date] = {};
-    acc.byDayTicket[w.date][w.issueKey] = (acc.byDayTicket[w.date][w.issueKey] || 0) + w.hours;
+  // Resolve ONLY each month's MISC ticket key → its numeric Jira issue id
+  // (one lookup per month, ~1-2 total). We deliberately do NOT resolve the
+  // key of every worklog's issue: a full month has ~1200 distinct issues,
+  // and resolving each via a Jira round-trip took ~65s and blew the MCP
+  // client's 60s timeout. Tempo worklogs already carry the numeric
+  // `issue.id`, and the only ticket this scan needs to single out is the
+  // month's MISC — so we match MISC by id directly and skip per-issue key
+  // resolution entirely.
+  const miscIdByMonth = {};
+  for (const [ym, miscKey] of Object.entries(miscKeyByMonth)) {
+    try {
+      const d = await jiraGet(`/rest/api/3/issue/${miscKey}?fields=summary`);
+      if (d?.id) miscIdByMonth[ym] = String(d.id);
+    } catch { /* if it fails, that month's MISC cross-check is skipped (miscId stays undefined) */ }
+  }
+
+  const byAccount = new Map(); // accountId -> { byDay: {date: totalHours}, miscByDay: {date: hoursOnMISC} }
+  for (const w of rawWorklogs) {
+    const accountId = w.author?.accountId;
+    const date = w.startDate;
+    if (!accountId || !date) continue;
+    const hours = (w.timeSpentSeconds || 0) / 3600;
+    const issueId = w.issue?.id != null ? String(w.issue.id) : null;
+    if (!byAccount.has(accountId)) byAccount.set(accountId, { byDay: {}, miscByDay: {} });
+    const acc = byAccount.get(accountId);
+    acc.byDay[date] = (acc.byDay[date] || 0) + hours;
+    if (issueId && issueId === miscIdByMonth[date.slice(0, 7)]) {
+      acc.miscByDay[date] = (acc.miscByDay[date] || 0) + hours;
+    }
   }
 
   // Resolve every logged-time account's Jira+Slack identity IN PARALLEL —
@@ -120,8 +140,8 @@ export async function missingLogtimeScan({ period, from: fromArg, to: toArg } = 
           const claim = detectAbsenceClaim(d, allMessages, slackId);
           if (!claim) return null;
           const miscKey = miscKeyByMonth[d.slice(0, 7)];
-          if (!miscKey) return null;
-          const actualMisc = acc.byDayTicket[d]?.[miscKey] || 0;
+          if (!miscKey || !miscIdByMonth[d.slice(0, 7)]) return null;
+          const actualMisc = acc.miscByDay[d] || 0;
           return actualMisc < claim.hours - 0.1 ? { d, expectedHours: claim.hours, actualMisc, miscKey } : null;
         })
         .filter(Boolean);

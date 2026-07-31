@@ -551,3 +551,17 @@ overwrites the cache entry. Unlike `logtime.js` (which only needs its
 one HR's own messages), this cache entry's `messages` array holds every
 message from every author that month — don't reintroduce a
 per-person-filtered cache here, `missing_logtime.js` needs everyone's.
+
+**Performance — do NOT resolve every worklog's issue key.** A full month
+has ~1,200 distinct Jira issues; resolving each id→key via a Jira
+round-trip (even throttled/cached) took ~65s and blew the MCP client's
+60s timeout (reported: "thisMonth" scan timed out with -32001). This
+scan does NOT call `normalizeTempoWorklog` — it reads raw Tempo worklogs
+and only needs the numeric `issue.id` each already carries. It resolves
+just the MISC ticket **key → id** once per month (`miscIdByMonth`), then
+matches MISC worklogs by id, so it makes ~2 Jira issue lookups instead of
+~1,200. Measured: full-month scan dropped from ~65s to ~8s. Don't
+reintroduce per-worklog key resolution here. (`export_report` still uses
+`normalizeTempoWorklog` because it genuinely classifies every worklog by
+MISC/HAE key pattern — if it ever starts timing out on a full month,
+apply the same id-matching optimization there.)
